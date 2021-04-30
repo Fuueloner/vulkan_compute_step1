@@ -1,5 +1,6 @@
 #include <vector>
 #include <fstream>
+#include <iostream>
 #include <cstring>
 
 struct Pixel { unsigned char r, g, b; };
@@ -48,3 +49,55 @@ void SaveBMP(const char* fname, const unsigned int* pixels, int w, int h)
 
   WriteBMP(fname, &pixels2[0], w, h);
 }
+
+unsigned int* LoadBMP(const char* fname, int& w, int& h)
+{
+  char bmpFileHeader[14];
+  char bmpInfoHeader[40];
+
+  std::ifstream inputFileStream(fname, std::ios::in | std::ios::binary);
+  
+  inputFileStream.read(bmpFileHeader, 14);
+  inputFileStream.read(bmpInfoHeader, 40);
+  
+  int paddedSize(0);
+  for (size_t i(5); i > 1; --i)
+  {
+    paddedSize <<= 8;
+    paddedSize += (int)(bmpFileHeader[i]);
+  }
+  for (size_t i(7); i > 3; --i)
+  {
+    w <<= 8;
+    w += (int)(bmpInfoHeader[i]);
+  }
+  for (size_t i(11); i > 7; --i)
+  {
+    h <<= 8;
+    h += (int)(bmpInfoHeader[i]);
+  }
+  
+  std::cout << "paddedSize: " << paddedSize << std::endl;
+  std::cout << "Width: " << w << std::endl;
+  std::cout << "Height: " << h << std::endl;
+
+  size_t count(w * h);
+  Pixel* internalPixels(new Pixel[count]);
+  
+  inputFileStream.read((char*)internalPixels, paddedSize);
+  
+  unsigned int* pixels(new unsigned int[count]);
+  for (size_t i(0); i < count; i++)
+  {
+    unsigned int px(0);
+    px += ((Pixel*)internalPixels)[i].r;
+    px <<= 8;
+    px += ((Pixel*)internalPixels)[i].g;
+    px <<= 8;
+    px += ((Pixel*)internalPixels)[i].b;
+    pixels[i] = px;
+  }
+  delete[] internalPixels;
+  return pixels;
+}
+

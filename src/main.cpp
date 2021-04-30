@@ -518,17 +518,22 @@ public:
 
 int main()
 {
-  ComputeApplication app;
+  //ComputeApplication app;
 
-  try
-  {
-    app.run();
-  }
-  catch (const std::runtime_error& e)
-  {
-    printf("%s\n", e.what());
-    return EXIT_FAILURE;
-  }
+  //try
+  //{
+  //  app.run();
+  //}
+  //catch (const std::runtime_error& e)
+  //{
+  //  printf("%s\n", e.what());
+  //  return EXIT_FAILURE;
+  //}
     
-  return EXIT_SUCCESS;
+  //return EXIT_SUCCESS;
+  int w, h;
+  unsigned int* pixels(LoadBMP("mandelbrot.bmp", w, h));
+  SaveBMP("mandelbrot1.bmp", pixels, w, h);
+  delete[] pixels;
+  return 0;
 }
