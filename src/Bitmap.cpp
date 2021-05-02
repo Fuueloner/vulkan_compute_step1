@@ -3,7 +3,7 @@
 #include <iostream>
 #include <cstring>
 
-struct Pixel { unsigned char r, g, b; };
+struct Pixel { unsigned char b, g, r; };
 
 void WriteBMP(const char* fname, Pixel* a_pixelData, int width, int height)
 {
@@ -41,9 +41,9 @@ void SaveBMP(const char* fname, const unsigned int* pixels, int w, int h)
   for (size_t i = 0; i < pixels2.size(); i++)
   {
     Pixel px;
-    px.r       = (pixels[i] & 0x00FF0000) >> 16;
-    px.g       = (pixels[i] & 0x0000FF00) >> 8;
-    px.b       = (pixels[i] & 0x000000FF);
+    px.r       = (pixels[i] & 0x0000FF00) >> 8;
+    px.g       = (pixels[i] & 0x000000FF);
+    px.b       = (pixels[i] & 0x00FF0000) >> 16;
     pixels2[i] = px;
   }
 

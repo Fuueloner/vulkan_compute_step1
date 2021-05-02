@@ -227,6 +227,7 @@ public:
       createBuffer(device, physicalDevice, uniformBufferSize, &uniformBuffer, &uniformBufferMemory, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
       
       loadRawImageToDeviceMemory(device, rawImageBufferMemory, rawImage, 0, width, height);
+      delete[] rawImage;
       loadWidthAndHeightToDeviceMemory(device, uniformBufferMemory, width, height); 
       
       createDescriptorSetLayout(device, &descriptorSetLayout, 2); // here we will create a binding of buffer to shader via descriptorSet
@@ -709,8 +710,8 @@ int main(int argc, char* argv[])
     
   return EXIT_SUCCESS;
 //   int w, h;
-//   unsigned int* pixels(LoadBMP("mandelbrot.bmp", w, h));
-//   SaveBMP("mandelbrot1.bmp", pixels, w, h);
+//   unsigned int* pixels(LoadBMP(filePath.c_str(), w, h));
+//   SaveBMP("result.bmp", pixels, w, h);
 //   delete[] pixels;
 //   return 0;
 }
