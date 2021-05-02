@@ -82,6 +82,10 @@ private:
     VkDescriptorPool      descriptorPool;
     VkDescriptorSet       descriptorSet;
     VkDescriptorSetLayout descriptorSetLayout;
+    
+    VkDescriptorPool      rawImageDescriptorPool;
+    VkDescriptorSet       rawImageDescriptorSet;
+    VkDescriptorSetLayout rawImageDescriptorSetLayout;
 
     /*
     The mandelbrot set will be rendered to this buffer.
@@ -90,6 +94,12 @@ private:
     */
     VkBuffer       buffer;
     VkDeviceMemory bufferMemory;
+    
+    VkBuffer       rawImageBuffer;
+    VkDeviceMemory rawImageBufferMemory;
+    
+    VkBuffer       uniformBuffer;
+    VkDeviceMemory uniformBufferMemory;
 
     std::vector<const char *> enabledLayers;
 
@@ -168,6 +178,91 @@ public:
       std::cout << "destroying all     ... " << std::endl;
       cleanup();
     }
+    
+    void runBilateralFilter(const std::string& path)
+    {
+      const int deviceId = 0;
+
+      std::cout << "init vulkan for device " << deviceId << " ... " << std::endl;
+
+      instance = vk_utils::CreateInstance(enableValidationLayers, enabledLayers);
+
+      if(enableValidationLayers)
+      {
+        vk_utils::InitDebugReportCallback(instance,
+                                          &debugReportCallbackFn, &debugReportCallback);
+      }
+
+      physicalDevice = vk_utils::FindPhysicalDevice(instance, true, deviceId);
+
+      /*
+      Groups of queues that have the same capabilities(for instance, they all supports graphics and computer operations),
+      are grouped into queue families.
+
+      When submitting a command buffer, you must specify to which queue in the family you are submitting to.
+      This variable keeps track of the index of that queue in its family.
+      */
+      uint32_t queueFamilyIndex = vk_utils::GetComputeQueueFamilyIndex(physicalDevice);
+
+      device = vk_utils::CreateLogicalDevice(queueFamilyIndex, physicalDevice, enabledLayers);
+
+      vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+      // Width of the image.
+      int width(0);
+      // Height of the image.
+      int height(0);
+      // Raw image we need to filter.
+      unsigned int* rawImage(LoadBMP(path.c_str(), width, height)); 
+      // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
+      size_t bufferSize = sizeof(Pixel) * width * height;
+      std::cout << "Size of Pixel in main.cpp: " << sizeof(Pixel) << std::endl;
+
+      std::cout << "creating resources ... " << std::endl;
+      size_t uniformBufferSize(2 * sizeof(int));
+      createBuffer(device, physicalDevice, bufferSize,      // very simple example of allocation
+                   &buffer, &bufferMemory, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);                 // (device, bufferSize) ==> (buffer, bufferMemory)
+      createBuffer(device, physicalDevice, bufferSize,
+                   &rawImageBuffer, &rawImageBufferMemory, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      createBuffer(device, physicalDevice, uniformBufferSize, &uniformBuffer, &uniformBufferMemory, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+      
+      loadRawImageToDeviceMemory(device, rawImageBufferMemory, rawImage, 0, width, height);
+      loadWidthAndHeightToDeviceMemory(device, uniformBufferMemory, width, height); 
+      
+      createDescriptorSetLayout(device, &descriptorSetLayout, 2); // here we will create a binding of buffer to shader via descriptorSet
+      std::cout << "DescriptorSetLayout created!\n";
+      createDescriptorPoolWithDescriptorSets(device, &descriptorSetLayout, &descriptorPool, &descriptorSet, 2);
+      std::cout << "DescriptorSet allocated!\n";
+      connectBufferWithDescriptor(device, buffer, bufferSize, &descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+      connectBufferWithDescriptor(device, rawImageBuffer, bufferSize, &descriptorSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+      connectBufferWithDescriptor(device, uniformBuffer, uniformBufferSize, &descriptorSet, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+      std::cout << "Buffers connected to descriptors!\n";
+      
+      
+      std::cout << "compiling shaders  ... " << std::endl;
+      createComputePipeline(device, descriptorSetLayout,
+                            &computeShaderModule, &pipeline, &pipelineLayout);
+
+      createCommandBuffer(device, queueFamilyIndex, pipeline, pipelineLayout,
+                          &commandPool, &commandBuffer);
+
+      recordCommandsTo(commandBuffer, pipeline, pipelineLayout, descriptorSet, width, height);
+
+      // Finally, run the recorded command buffer.
+      std::cout << "doing computations ... " << std::endl;
+      runCommandBuffer(commandBuffer, queue, device);
+
+      // The former command rendered a mandelbrot set to a buffer.
+      // Save that buffer as a png on disk.
+      std::cout << "saving image       ... " << std::endl;
+      saveRenderedImageFromDeviceMemory(device, bufferMemory, 0, width, height);
+
+      // Clean up all vulkan resources.
+      std::cout << "destroying all     ... " << std::endl;
+      cleanup();
+    }
+    
+    
 
     // assume simple pitch-linear data layout and 'a_bufferMemory' to be a mapped memory.
     //
@@ -203,7 +298,51 @@ public:
         vkUnmapMemory(a_device, a_bufferMemory);
       }
 
-      SaveBMP("mandelbrot.bmp", (const uint32_t*)image.data(), WIDTH, HEIGHT);
+      SaveBMP("result.bmp", (const uint32_t*)image.data(), a_width, a_height);
+    }
+    
+    static void loadRawImageToDeviceMemory(VkDevice a_device, VkDeviceMemory a_bufferMemory, unsigned int* image, size_t a_offset, int a_width, int a_height)
+    {
+      const int      a_bufferSize = a_width * sizeof(Pixel);
+      unsigned char* imageAsBytes((unsigned char*)(image));
+
+      void* mappedMemory = nullptr;
+      // Map the buffer memory, so that we can read from it on the CPU.
+
+      for (int i = 0; i < a_height; i += 1) 
+      {
+        size_t offset = a_offset + i * a_width * sizeof(Pixel);
+
+        mappedMemory = nullptr;
+
+        // Get the color data from the buffer, and cast it to bytes.
+        vkMapMemory(a_device, a_bufferMemory, offset, a_bufferSize, 0, &mappedMemory);
+        Pixel* pmappedMemory = (Pixel *)mappedMemory;
+        size_t currentImagePixelIndex((i * a_width) * 4);
+        for (int j = 0; j < a_width; j += 1)
+        {
+          pmappedMemory[j].r = static_cast<float>(imageAsBytes[currentImagePixelIndex++]) / 255.f;
+          pmappedMemory[j].g = static_cast<float>(imageAsBytes[currentImagePixelIndex++]) / 255.f;
+          pmappedMemory[j].b = static_cast<float>(imageAsBytes[currentImagePixelIndex++]) / 255.f;
+          pmappedMemory[j].a = static_cast<float>(imageAsBytes[currentImagePixelIndex++]) / 255.f;
+        }
+        // Done reading, so unmap.
+        vkUnmapMemory(a_device, a_bufferMemory);
+      }
+      std::cout << "Done reading!\n";
+    }
+    
+    static void loadWidthAndHeightToDeviceMemory(VkDevice a_device, VkDeviceMemory a_bufferMemory, int a_width, int a_height)
+    {
+
+      void* mappedMemory = nullptr;
+      // Map the buffer memory, so that we can read from it on the CPU.
+
+      vkMapMemory(a_device, a_bufferMemory, 0, 2 * sizeof(int), 0, &mappedMemory);
+      ((int*)(mappedMemory))[0] = a_width;
+      ((int*)(mappedMemory))[1] = a_height;
+      
+      std::cout << "Done reading width and height!\n";
     }
 
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackFn(
@@ -222,7 +361,7 @@ public:
 
 
     static void createBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, const size_t a_bufferSize,
-                             VkBuffer* a_pBuffer, VkDeviceMemory* a_pBufferMemory)
+                             VkBuffer* a_pBuffer, VkDeviceMemory* a_pBufferMemory, VkBufferUsageFlagBits vkBufferUsageFlagBits = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
     {
       /*
       We will now create a buffer. We will render the mandelbrot set into this buffer
@@ -231,7 +370,7 @@ public:
       VkBufferCreateInfo bufferCreateInfo = {};
       bufferCreateInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bufferCreateInfo.size        = a_bufferSize; // buffer size in bytes.
-      bufferCreateInfo.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // buffer is used as a storage buffer.
+      bufferCreateInfo.usage       = vkBufferUsageFlagBits; // buffer is used as a storage buffer.
       bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // buffer is exclusive to a single queue family at a time.
 
       VK_CHECK_RESULT(vkCreateBuffer(a_device, &bufferCreateInfo, NULL, a_pBuffer)); // create buffer.
@@ -265,7 +404,7 @@ public:
       VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
     }
 
-    static void createDescriptorSetLayout(VkDevice a_device, VkDescriptorSetLayout* a_pDSLayout)
+    static void createDescriptorSetLayout(VkDevice a_device, VkDescriptorSetLayout* a_pDSLayout, size_t requestedBindingsCount = 1)
     {
        /*
        Here we specify a binding of type VK_DESCRIPTOR_TYPE_STORAGE_BUFFER to the binding point 0.
@@ -273,23 +412,32 @@ public:
          layout(std140, binding = 0) buffer buf
        in the compute shader.
        */
-       VkDescriptorSetLayoutBinding descriptorSetLayoutBinding = {};
-       descriptorSetLayoutBinding.binding         = 0; // binding = 0
-       descriptorSetLayoutBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-       descriptorSetLayoutBinding.descriptorCount = 1;
-       descriptorSetLayoutBinding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+       std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings;
+       setLayoutBindings.resize(requestedBindingsCount + 1);
+       for (size_t i(0); i < requestedBindingsCount; ++i)
+       {
+         setLayoutBindings[i].binding         = i; // binding = 0
+         setLayoutBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+         setLayoutBindings[i].descriptorCount = 1;
+         setLayoutBindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+       }
+       
+       setLayoutBindings[requestedBindingsCount].binding = requestedBindingsCount;
+       setLayoutBindings[requestedBindingsCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+       setLayoutBindings[requestedBindingsCount].descriptorCount = 1;
+       setLayoutBindings[requestedBindingsCount].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
        descriptorSetLayoutCreateInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-       descriptorSetLayoutCreateInfo.bindingCount = 1; // only a single binding in this descriptor set layout.
-       descriptorSetLayoutCreateInfo.pBindings    = &descriptorSetLayoutBinding;
+       descriptorSetLayoutCreateInfo.bindingCount = requestedBindingsCount + 1; // only a single binding in this descriptor set layout.
+       descriptorSetLayoutCreateInfo.pBindings    = setLayoutBindings.data();
 
        // Create the descriptor set layout.
        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(a_device, &descriptorSetLayoutCreateInfo, NULL, a_pDSLayout));
     }
-
-    static void createDescriptorSetForOurBuffer(VkDevice a_device, VkBuffer a_buffer, size_t a_bufferSize, const VkDescriptorSetLayout* a_pDSLayout,
-                                                VkDescriptorPool* a_pDSPool, VkDescriptorSet* a_pDS)
+    
+    static void
+    createDescriptorPoolWithDescriptorSets(VkDevice a_device, const VkDescriptorSetLayout* a_pDSLayout, VkDescriptorPool* a_pDSPool, VkDescriptorSet* a_pDS, size_t requestedDescriptorsCount)
     {
       /*
       So we will allocate a descriptor set here.
@@ -299,31 +447,44 @@ public:
       /*
       Our descriptor pool can only allocate a single storage buffer.
       */
-      VkDescriptorPoolSize descriptorPoolSize = {};
-      descriptorPoolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      descriptorPoolSize.descriptorCount = 1;
+      std::vector<VkDescriptorPoolSize> descriptorPoolSize;
+      descriptorPoolSize.resize(2);
+      descriptorPoolSize[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      descriptorPoolSize[0].descriptorCount = requestedDescriptorsCount;
+      descriptorPoolSize[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      descriptorPoolSize[1].descriptorCount = 1;
 
       VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
       descriptorPoolCreateInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-      descriptorPoolCreateInfo.maxSets       = 1; // we only need to allocate one descriptor set from the pool.
-      descriptorPoolCreateInfo.poolSizeCount = 1;
-      descriptorPoolCreateInfo.pPoolSizes    = &descriptorPoolSize;
+      descriptorPoolCreateInfo.maxSets       = 2; // we only need to allocate one descriptor set from the pool.
+      descriptorPoolCreateInfo.poolSizeCount = 2;
+      descriptorPoolCreateInfo.pPoolSizes    = descriptorPoolSize.data();
 
       // create descriptor pool.
       VK_CHECK_RESULT(vkCreateDescriptorPool(a_device, &descriptorPoolCreateInfo, NULL, a_pDSPool));
-
+      std::cout << "DescriptorPool created!\n";
       /*
       With the pool allocated, we can now allocate the descriptor set.
       */
       VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
       descriptorSetAllocateInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
       descriptorSetAllocateInfo.descriptorPool     = (*a_pDSPool); // pool to allocate from.
-      descriptorSetAllocateInfo.descriptorSetCount = 1;            // allocate a single descriptor set.
+      descriptorSetAllocateInfo.descriptorSetCount = 1;
       descriptorSetAllocateInfo.pSetLayouts        = a_pDSLayout;
 
       // allocate descriptor set.
       VK_CHECK_RESULT(vkAllocateDescriptorSets(a_device, &descriptorSetAllocateInfo, a_pDS));
-
+    }
+    
+    static void
+    connectBufferWithDescriptor(
+        VkDevice a_device,
+        VkBuffer a_buffer,
+        size_t a_bufferSize,
+        VkDescriptorSet* a_pDS,
+        size_t numberOfDescriptor,
+        VkDescriptorType vkDescriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+    {
       /*
       Next, we need to connect our actual storage buffer with the descrptor.
       We use vkUpdateDescriptorSets() to update the descriptor set.
@@ -337,14 +498,21 @@ public:
 
       VkWriteDescriptorSet writeDescriptorSet = {};
       writeDescriptorSet.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writeDescriptorSet.dstSet          = (*a_pDS); // write to this descriptor set.
-      writeDescriptorSet.dstBinding      = 0;        // write to the first, and only binding.
-      writeDescriptorSet.descriptorCount = 1;        // update a single descriptor.
-      writeDescriptorSet.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; // storage buffer.
+      writeDescriptorSet.dstSet          = (*a_pDS);           // write to this descriptor set.
+      writeDescriptorSet.dstBinding      = numberOfDescriptor; // write to the first, and only binding.
+      writeDescriptorSet.descriptorCount = 1;                  // update a single descriptor.
+      writeDescriptorSet.descriptorType  = vkDescriptorType; // storage buffer.
       writeDescriptorSet.pBufferInfo     = &descriptorBufferInfo;
 
       // perform the update of the descriptor set.
       vkUpdateDescriptorSets(a_device, 1, &writeDescriptorSet, 0, NULL);
+    }
+            
+    static void createDescriptorSetForOurBuffer(VkDevice a_device, VkBuffer a_buffer, size_t a_bufferSize, const VkDescriptorSetLayout* a_pDSLayout,
+                                                VkDescriptorPool* a_pDSPool, VkDescriptorSet* a_pDS)
+    {
+      createDescriptorPoolWithDescriptorSets(a_device, a_pDSLayout, a_pDSPool, a_pDS, 1);
+      connectBufferWithDescriptor(a_device, a_buffer, a_bufferSize, a_pDS, 0);
     }
 
     static void createComputePipeline(VkDevice a_device, const VkDescriptorSetLayout& a_dsLayout,
@@ -425,7 +593,7 @@ public:
       VK_CHECK_RESULT(vkAllocateCommandBuffers(a_device, &commandBufferAllocateInfo, a_pCmdBuff)); // allocate command buffer.
     }
 
-    static void recordCommandsTo(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline, VkPipelineLayout a_layout, const VkDescriptorSet& a_ds)
+    static void recordCommandsTo(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline, VkPipelineLayout a_layout, const VkDescriptorSet& a_ds, int width = WIDTH, int height = HEIGHT)
     {
       /*
       Now we shall start recording commands into the newly allocated command buffer.
@@ -447,7 +615,7 @@ public:
       The number of workgroups is specified in the arguments.
       If you are already familiar with compute shaders from OpenGL, this should be nothing new to you.
       */
-      vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(WIDTH / float(WORKGROUP_SIZE)), (uint32_t)ceil(HEIGHT / float(WORKGROUP_SIZE)), 1);
+      vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(width / float(WORKGROUP_SIZE)), (uint32_t)ceil(height / float(WORKGROUP_SIZE)), 1);
 
       VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff)); // end recording commands.
     }
@@ -504,7 +672,11 @@ public:
         }
 
         vkFreeMemory(device, bufferMemory, NULL);
-        vkDestroyBuffer(device, buffer, NULL);	
+        vkFreeMemory(device, rawImageBufferMemory, NULL);
+        vkFreeMemory(device, uniformBufferMemory, NULL);
+        vkDestroyBuffer(device, buffer, NULL);
+        vkDestroyBuffer(device, rawImageBuffer, NULL);
+        vkDestroyBuffer(device, uniformBuffer, NULL);
         vkDestroyShaderModule(device, computeShaderModule, NULL);
         vkDestroyDescriptorPool(device, descriptorPool, NULL);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, NULL);
@@ -516,24 +688,29 @@ public:
     }
 };
 
-int main()
+int main(int argc, char* argv[])
 {
-  //ComputeApplication app;
+  ComputeApplication app;
+  
+  std::string filePath("mandelbrot.bmp");
+  
+  if (argc > 1)
+    filePath = std::string(argv[1]);
 
-  //try
-  //{
-  //  app.run();
-  //}
-  //catch (const std::runtime_error& e)
-  //{
-  //  printf("%s\n", e.what());
-  //  return EXIT_FAILURE;
-  //}
+  try
+  {
+   app.runBilateralFilter(filePath);
+  }
+  catch (const std::runtime_error& e)
+  {
+   printf("%s\n", e.what());
+   return EXIT_FAILURE;
+  }
     
-  //return EXIT_SUCCESS;
-  int w, h;
-  unsigned int* pixels(LoadBMP("mandelbrot.bmp", w, h));
-  SaveBMP("mandelbrot1.bmp", pixels, w, h);
-  delete[] pixels;
-  return 0;
+  return EXIT_SUCCESS;
+//   int w, h;
+//   unsigned int* pixels(LoadBMP("mandelbrot.bmp", w, h));
+//   SaveBMP("mandelbrot1.bmp", pixels, w, h);
+//   delete[] pixels;
+//   return 0;
 }
