@@ -1,0 +1,84 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+#define WORKGROUP_SIZE 16
+#define GRAYSCALE_R 0.2126f
+#define GRAYSCALE_G 0.7152f
+#define GRAYSCALE_B 0.0722f
+#define WINDOW_SIDE_HALF_LENGTH 16
+
+#define RANGE_PARAMETER 1.f
+#define SPATIAL_PARAMETER 1.f
+
+layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
+
+struct Pixel{
+  vec4 value;
+};
+
+layout(std140, binding = 0) buffer resultImage
+{
+   Pixel resultImageData[];
+};
+
+layout(std140, binding = 1) buffer originalImage
+{
+   Pixel originalImageData[];
+};
+
+layout(binding = 2) uniform UniformBufferObject
+{
+    int width;
+    int height;
+} ubo;
+
+void main() {
+
+  int globalWidth = ubo.width;
+  int globalHeight = ubo.height;
+
+  uint horizontalIndex = gl_GlobalInvocationID.x;
+  uint verticalIndex = gl_GlobalInvocationID.y;
+  /*
+  In order to fit the work into workgroups, some unnecessary threads are launched.
+  We terminate those threads here. 
+  */
+  if(horizontalIndex >= globalWidth || verticalIndex >= globalHeight)
+    return;
+
+  float x = float(horizontalIndex) / float(globalWidth);
+  float y = float(verticalIndex) / float(globalHeight);
+  
+  vec4 originalPixel = originalImageData[globalWidth * verticalIndex + horizontalIndex].value;
+  float originalIntensity = GRAYSCALE_R * originalPixel.r + GRAYSCALE_G * originalPixel.g + GRAYSCALE_B * originalPixel.b;
+  
+  float spatialDivider = 2.f * pow(SPATIAL_PARAMETER, 2);
+  float rangeDivider = 2.f * pow(RANGE_PARAMETER, 2);
+  
+  float sumOfWeights = 0.f;
+  float numerator = 0.f;
+  int rightBorderIndex = int(horizontalIndex + WINDOW_SIDE_HALF_LENGTH);
+  int downBorderIndex = int(verticalIndex + WINDOW_SIDE_HALF_LENGTH);
+  float intensityMultiplier = 0.f;
+  if (originalIntensity != 0.f)
+  {
+    for (int i = int(verticalIndex) - WINDOW_SIDE_HALF_LENGTH; i < downBorderIndex; ++i)
+      for (int j = int(horizontalIndex) - WINDOW_SIDE_HALF_LENGTH; j < rightBorderIndex; ++j)
+        if ((i >= 0) && (i < globalHeight) && (j >= 0) && (j < globalWidth) && (i != verticalIndex) && (j != horizontalIndex))
+        {
+          vec4  localPixel = originalImageData[globalWidth * i + j].value;
+          float localIntensity = GRAYSCALE_R * localPixel.r + GRAYSCALE_G * localPixel.g + GRAYSCALE_B * localPixel.b;
+          float squareDistance = pow(horizontalIndex - j, 2) + pow(verticalIndex - i, 2);
+          float squareNormIntesityDifference = pow(localIntensity - originalIntensity, 2);
+          float weight =  exp(-(squareDistance / spatialDivider) - (squareNormIntesityDifference / rangeDivider));
+          sumOfWeights += weight;
+          numerator += weight * localIntensity;
+        }
+    intensityMultiplier = numerator / sumOfWeights / originalIntensity;
+  }
+    
+  vec4 newPixel = intensityMultiplier * originalPixel;
+  
+  resultImageData[globalWidth * verticalIndex + horizontalIndex].value = newPixel;
+  
+}
