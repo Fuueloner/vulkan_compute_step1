@@ -10,6 +10,7 @@
 #include "Bitmap.h" // Save bmp file
 
 #include <iostream>
+#include <chrono>
 
 const int WIDTH          = 1024;  // Size of rendered mandelbrot set.
 const int HEIGHT         = 1024;  // Size of renderered mandelbrot set.
@@ -181,6 +182,15 @@ public:
     
     void runBilateralFilter(const std::string& path)
     {
+        
+      // Width of the image.
+      int width(0);
+      // Height of the image.
+      int height(0);
+      // Raw image we need to filter.
+      unsigned int* rawImage(LoadBMP(path.c_str(), width, height)); 
+      //runBilateralFilterOnCPU(rawImage, width, height);
+      
       const int deviceId = 0;
 
       std::cout << "init vulkan for device " << deviceId << " ... " << std::endl;
@@ -208,12 +218,7 @@ public:
 
       vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
-      // Width of the image.
-      int width(0);
-      // Height of the image.
-      int height(0);
-      // Raw image we need to filter.
-      unsigned int* rawImage(LoadBMP(path.c_str(), width, height)); 
+      
       // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
       size_t bufferSize = sizeof(Pixel) * width * height;
       std::cout << "Size of Pixel in main.cpp: " << sizeof(Pixel) << std::endl;
@@ -261,6 +266,104 @@ public:
       // Clean up all vulkan resources.
       std::cout << "destroying all     ... " << std::endl;
       cleanup();
+    }
+    
+    void runBilateralFilterOnCPU(const unsigned int* rawImage, int globalWidth, int globalHeight)
+    {
+      using namespace std::chrono;
+      constexpr float  GRAYSCALE_R(0.2126f);
+      constexpr float  GRAYSCALE_G(0.7152f);
+      constexpr float  GRAYSCALE_B(0.0722f);
+      constexpr size_t WINDOW_SIDE_HALF_LENGTH(8);
+      constexpr float  RANGE_PARAMETER(0.25f);
+      constexpr float  SPATIAL_PARAMETER(10.f);
+      
+      const int      countOfPixels(globalWidth * globalHeight);
+      unsigned char* imageAsBytes((unsigned char*)(rawImage));
+
+      const unsigned char* rawImageAsBytes((const unsigned char*)rawImage);
+      Pixel* pixels(new Pixel[countOfPixels]);
+      Pixel* filteredPixels(new Pixel[countOfPixels]);
+      size_t currentRawImageByte(0);
+      for (int i(0); i < countOfPixels; ++i)
+      {
+        pixels[i].r = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].g = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].b = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].a = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+      }
+      
+      milliseconds start(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      
+      for (unsigned int verticalIndex(0); verticalIndex < globalHeight; ++verticalIndex)
+        for (unsigned int horizontalIndex(0); horizontalIndex < globalWidth; ++horizontalIndex)
+        {
+
+          float x = float(horizontalIndex) / float(globalWidth);
+          float y = float(verticalIndex) / float(globalHeight);
+  
+          Pixel originalPixel(pixels[globalWidth * verticalIndex + horizontalIndex]);
+          float originalIntensity(sqrt(pow(originalPixel.r, 2) + pow(originalPixel.g, 2) + pow(originalPixel.b, 2)));
+  
+          float spatialDivider(2.f * pow(SPATIAL_PARAMETER, 2));
+          float rangeDivider(2.f * pow(RANGE_PARAMETER, 2));
+  
+          float sumOfWeights(0.f);
+          float numerator(0.f);
+          int rightBorderIndex(int(horizontalIndex + WINDOW_SIDE_HALF_LENGTH));
+          int downBorderIndex(int(verticalIndex + WINDOW_SIDE_HALF_LENGTH));
+          float intensityMultiplier(0.f);
+          if (originalIntensity != 0.f)
+          {
+            for (int i(int(verticalIndex) - WINDOW_SIDE_HALF_LENGTH); i < downBorderIndex; ++i)
+              for (int j(int(horizontalIndex) - WINDOW_SIDE_HALF_LENGTH); j < rightBorderIndex; ++j)
+                if ((i >= 0) && (i < globalHeight) && (j >= 0) && (j < globalWidth) && (i != verticalIndex) && (j != horizontalIndex))
+                {
+                  Pixel localPixel(pixels[globalWidth * i + j]);
+                  float localIntensity(sqrt(pow(localPixel.r, 2) + pow(localPixel.g, 2) + pow(localPixel.b, 2)));
+                  float squareDistance(pow(horizontalIndex - j, 2) + pow(verticalIndex - i, 2));
+                  float squareNormIntesityDifference(pow(localIntensity - originalIntensity, 2));
+                  float weight(exp(-(squareDistance / spatialDivider) - (squareNormIntesityDifference / rangeDivider)));
+                  sumOfWeights += weight;
+                  numerator += weight * localIntensity;
+                }
+            intensityMultiplier = numerator / sumOfWeights / originalIntensity;
+          }
+
+          Pixel newPixel { 
+            intensityMultiplier * originalPixel.r,
+            intensityMultiplier * originalPixel.g,
+            intensityMultiplier * originalPixel.b,
+            intensityMultiplier * originalPixel.a
+          };
+          if (newPixel.r > 1.0)
+            newPixel.r = 1.0;
+          if (newPixel.g > 1.0)
+            newPixel.g = 1.0;
+          if (newPixel.b > 1.0)
+            newPixel.b = 1.0;
+          newPixel.a = 0.0;
+  
+          filteredPixels[globalWidth * verticalIndex + horizontalIndex] = newPixel;
+      
+        }
+        
+      milliseconds finish(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      milliseconds cpu1ThreadTime(finish - start);
+      std::cout << "Time on CPU (1 thread): " << cpu1ThreadTime.count() << " ms.\n";
+      
+      std::vector<unsigned char> image;
+      image.reserve(countOfPixels);
+
+      for (int i(0); i < countOfPixels; ++i) 
+      {
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].r)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].g)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].b)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].a)));
+      }
+
+      SaveBMP("resultByCPU.bmp", (const uint32_t*)image.data(), globalWidth, globalHeight);
     }
     
     
