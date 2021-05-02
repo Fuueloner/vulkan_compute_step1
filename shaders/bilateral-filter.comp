@@ -7,8 +7,8 @@
 #define GRAYSCALE_B 0.0722f
 #define WINDOW_SIDE_HALF_LENGTH 16
 
-#define RANGE_PARAMETER 1.f
-#define SPATIAL_PARAMETER 1.f
+#define RANGE_PARAMETER 0.25f
+#define SPATIAL_PARAMETER 10.f
 
 layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
 
@@ -50,7 +50,7 @@ void main() {
   float y = float(verticalIndex) / float(globalHeight);
   
   vec4 originalPixel = originalImageData[globalWidth * verticalIndex + horizontalIndex].value;
-  float originalIntensity = GRAYSCALE_R * originalPixel.r + GRAYSCALE_G * originalPixel.g + GRAYSCALE_B * originalPixel.b;
+  float originalIntensity = sqrt(pow(originalPixel.r, 2) + pow(originalPixel.g, 2) + pow(originalPixel.b, 2));
   
   float spatialDivider = 2.f * pow(SPATIAL_PARAMETER, 2);
   float rangeDivider = 2.f * pow(RANGE_PARAMETER, 2);
@@ -67,7 +67,7 @@ void main() {
         if ((i >= 0) && (i < globalHeight) && (j >= 0) && (j < globalWidth) && (i != verticalIndex) && (j != horizontalIndex))
         {
           vec4  localPixel = originalImageData[globalWidth * i + j].value;
-          float localIntensity = GRAYSCALE_R * localPixel.r + GRAYSCALE_G * localPixel.g + GRAYSCALE_B * localPixel.b;
+          float localIntensity = sqrt(pow(localPixel.r, 2) + pow(localPixel.g, 2) + pow(localPixel.b, 2));
           float squareDistance = pow(horizontalIndex - j, 2) + pow(verticalIndex - i, 2);
           float squareNormIntesityDifference = pow(localIntensity - originalIntensity, 2);
           float weight =  exp(-(squareDistance / spatialDivider) - (squareNormIntesityDifference / rangeDivider));
@@ -76,8 +76,15 @@ void main() {
         }
     intensityMultiplier = numerator / sumOfWeights / originalIntensity;
   }
-    
+
   vec4 newPixel = intensityMultiplier * originalPixel;
+  if (newPixel.r > 1.0)
+    newPixel.r = 1.0;
+  if (newPixel.g > 1.0)
+    newPixel.g = 1.0;
+  if (newPixel.b > 1.0)
+    newPixel.b = 1.0;
+  newPixel.a = 0.0;
   
   resultImageData[globalWidth * verticalIndex + horizontalIndex].value = newPixel;
   
