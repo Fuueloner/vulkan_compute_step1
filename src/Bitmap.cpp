@@ -60,7 +60,7 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
   inputFileStream.read(bmpFileHeader, 14);
   inputFileStream.read(bmpInfoHeader, 40);
   
-  int paddedSize(0);
+  unsigned int paddedSize(0);
   for (size_t i(5); i > 1; --i)
   {
     paddedSize <<= 8;
@@ -84,17 +84,17 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
   size_t count(w * h);
   Pixel* internalPixels(new Pixel[count]);
   
-  inputFileStream.read((char*)internalPixels, paddedSize);
+  inputFileStream.read((char*)internalPixels, count * 3);
   
   unsigned int* pixels(new unsigned int[count]);
   for (size_t i(0); i < count; i++)
   {
     unsigned int px(0);
-    px += ((Pixel*)internalPixels)[i].r;
+    px += internalPixels[i].r;
     px <<= 8;
-    px += ((Pixel*)internalPixels)[i].g;
+    px += internalPixels[i].g;
     px <<= 8;
-    px += ((Pixel*)internalPixels)[i].b;
+    px += internalPixels[i].b;
     pixels[i] = px;
   }
   delete[] internalPixels;
