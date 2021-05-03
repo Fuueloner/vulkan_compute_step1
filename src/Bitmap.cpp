@@ -4,6 +4,7 @@
 #include <cstring>
 
 struct Pixel { unsigned char b, g, r; };
+struct Pixel32 { unsigned char a, b, g, r; };
 
 void WriteBMP(const char* fname, Pixel* a_pixelData, int width, int height)
 {
@@ -70,7 +71,7 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
   for (size_t i(13); i > 9; --i)
   {
     byteOffsetToPixelArray <<=8;
-    byteOffsetToPixelArray += bmpFileHeader[i];
+    byteOffsetToPixelArray += (unsigned char)bmpFileHeader[i];
   }
   std::cout << "Byte offset to PixelArray: " << byteOffsetToPixelArray << std::endl;
   for (size_t i(7); i > 3; --i)
@@ -83,29 +84,57 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
     h <<= 8;
     h += (int)(bmpInfoHeader[i]);
   }
-  
+  size_t bytesPerPixel(0);
+  for (size_t i(15); i > 13; --i)
+  {
+    bytesPerPixel <<= 8;
+    bytesPerPixel += (unsigned char)(bmpInfoHeader[i]);
+  }
+  std::cout << "Bytes per pixel: " << bytesPerPixel << std::endl;
   std::cout << "paddedSize: " << paddedSize << std::endl;
   std::cout << "Width: " << w << std::endl;
   std::cout << "Height: " << h << std::endl;
 
   size_t count(w * h);
-  Pixel* internalPixels(new Pixel[count]);
+
+    
+  unsigned int* pixels(new unsigned int[count]);
   
   inputFileStream.seekg(byteOffsetToPixelArray);
-  inputFileStream.read((char*)internalPixels, count * 3);
-  
-  unsigned int* pixels(new unsigned int[count]);
-  for (size_t i(0); i < count; i++)
+  if (bytesPerPixel == 32)
   {
-    unsigned int px(0);
-    px += internalPixels[i].r;
-    px <<= 8;
-    px += internalPixels[i].g;
-    px <<= 8;
-    px += internalPixels[i].b;
-    pixels[i] = px;
+    Pixel32* internalPixels(new Pixel32[count]);
+    inputFileStream.read((char*)internalPixels, count * sizeof(Pixel32));
+    for (size_t i(0); i < count; i++)
+    {
+      unsigned int px(0);
+      px += ((Pixel32*)internalPixels)[i].r;
+      px <<= 8;
+      px += ((Pixel32*)internalPixels)[i].g;
+      px <<= 8;
+      px += ((Pixel32*)internalPixels)[i].b;
+      px <<= 8;
+      px += ((Pixel32*)internalPixels)[i].a;
+      pixels[i] = px;
+    }
+    delete[] internalPixels;
   }
-  delete[] internalPixels;
+  else
+  {
+    Pixel* internalPixels(new Pixel[count]);
+    inputFileStream.read((char*)internalPixels, count * sizeof(Pixel));
+    for (size_t i(0); i < count; i++)
+    {
+      unsigned int px(0);
+      px += ((Pixel*)internalPixels)[i].r;
+      px <<= 8;
+      px += ((Pixel*)internalPixels)[i].g;
+      px <<= 8;
+      px += ((Pixel*)internalPixels)[i].b;
+      pixels[i] = px;
+    }
+    delete[] internalPixels;
+  }
   return pixels;
 }
 
