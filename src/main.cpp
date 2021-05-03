@@ -180,7 +180,7 @@ public:
       cleanup();
     }
     
-    void runBilateralFilter(const std::string& path, bool cpu1ThreadFlag)
+    void runBilateralFilter(const std::string& path)
     {
         
       // Width of the image.
@@ -190,8 +190,7 @@ public:
       // Raw image we need to filter.
       unsigned int* rawImage(LoadBMP(path.c_str(), width, height));
       
-      if (cpu1ThreadFlag)
-        runBilateralFilterOnCPU(rawImage, width, height);
+      runBilateralFilterOnCPU(rawImage, width, height);
       
       const int deviceId = 0;
 
@@ -344,7 +343,7 @@ public:
             newPixel.g = 1.0;
           if (newPixel.b > 1.0)
             newPixel.b = 1.0;
-          newPixel.a = 0.0;
+          newPixel.a = originalPixel.a;
   
           filteredPixels[globalWidth * verticalIndex + horizontalIndex] = newPixel;
       
@@ -802,18 +801,10 @@ int main(int argc, char* argv[])
   
   if (argc > 1)
     filePath = std::string(argv[1]);
-  
-  bool cpu1ThreadFlag(false);
-  for (int i(1); i < argc; ++i)
-    if (std::string(argv[i]) == std::string("-cpu1thread"))
-    {
-      cpu1ThreadFlag = true;
-      break;
-    }
 
   try
   {
-   app.runBilateralFilter(filePath, cpu1ThreadFlag);
+   app.runBilateralFilter(filePath);
   }
   catch (const std::runtime_error& e)
   {
