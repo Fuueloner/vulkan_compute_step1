@@ -41,9 +41,9 @@ void SaveBMP(const char* fname, const unsigned int* pixels, int w, int h)
   for (size_t i = 0; i < pixels2.size(); i++)
   {
     Pixel px;
-    px.r       = (pixels[i] & 0x0000FF00) >> 8;
-    px.g       = (pixels[i] & 0x000000FF);
-    px.b       = (pixels[i] & 0x00FF0000) >> 16;
+    px.r       = (pixels[i] & 0x00FF0000) >> 16;
+    px.g       = (pixels[i] & 0x0000FF00) >> 8;
+    px.b       = (pixels[i] & 0x000000FF);
     pixels2[i] = px;
   }
 
@@ -66,6 +66,13 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
     paddedSize <<= 8;
     paddedSize += (int)(bmpFileHeader[i]);
   }
+  size_t byteOffsetToPixelArray(0);
+  for (size_t i(13); i > 9; --i)
+  {
+    byteOffsetToPixelArray <<=8;
+    byteOffsetToPixelArray += bmpFileHeader[i];
+  }
+  std::cout << "Byte offset to PixelArray: " << byteOffsetToPixelArray << std::endl;
   for (size_t i(7); i > 3; --i)
   {
     w <<= 8;
@@ -84,6 +91,7 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
   size_t count(w * h);
   Pixel* internalPixels(new Pixel[count]);
   
+  inputFileStream.seekg(byteOffsetToPixelArray);
   inputFileStream.read((char*)internalPixels, count * 3);
   
   unsigned int* pixels(new unsigned int[count]);
