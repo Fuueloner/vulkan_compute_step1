@@ -1,14 +1,14 @@
-
+#include "Bitmap.h" // Save bmp file
+// Vulkan
 #include <vulkan/vulkan.h>
-
+// OpenMP
+#include <omp.h>
+//std
 #include <vector>
 #include <string.h>
 #include <assert.h>
 #include <stdexcept>
 #include <cmath>
-
-#include "Bitmap.h" // Save bmp file
-
 #include <iostream>
 #include <chrono>
 
@@ -180,20 +180,15 @@ public:
       cleanup();
     }
     
-    void runBilateralFilter(const std::string& path)
+    void runBilateralFilter(const unsigned int* rawImage, int width, int height)
     {
-        
-      // Width of the image.
-      int width(0);
-      // Height of the image.
-      int height(0);
-      // Raw image we need to filter.
-      unsigned int* rawImage(LoadBMP(path.c_str(), width, height));
+      using namespace std::chrono;
       
-      runBilateralFilterOnCPU(rawImage, width, height);
+      const std::string resultFilePath("result.bmp");
+      const int         deviceId = 0;
       
-      const int deviceId = 0;
-
+      milliseconds startComputing(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      
       std::cout << "init vulkan for device " << deviceId << " ... " << std::endl;
 
       instance = vk_utils::CreateInstance(enableValidationLayers, enabledLayers);
@@ -220,9 +215,8 @@ public:
       vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
       
-      // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
+      // Buffer size of the storage buffers that will contain both raw and processed images.
       size_t bufferSize = sizeof(Pixel) * width * height;
-      std::cout << "Size of Pixel in main.cpp: " << sizeof(Pixel) << std::endl;
 
       std::cout << "creating resources ... " << std::endl;
       size_t uniformBufferSize(2 * sizeof(int));
@@ -232,19 +226,19 @@ public:
                    &rawImageBuffer, &rawImageBufferMemory, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       createBuffer(device, physicalDevice, uniformBufferSize, &uniformBuffer, &uniformBufferMemory, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
       
+      milliseconds startCopying(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      
       loadRawImageToDeviceMemory(device, rawImageBufferMemory, rawImage, 0, width, height);
-      delete[] rawImage;
-      loadWidthAndHeightToDeviceMemory(device, uniformBufferMemory, width, height); 
+      loadWidthAndHeightToDeviceMemory(device, uniformBufferMemory, width, height);
+      
+      milliseconds finishCopying(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      milliseconds gpuCopyingTime(finishCopying - startCopying);
       
       createDescriptorSetLayout(device, &descriptorSetLayout, 2); // here we will create a binding of buffer to shader via descriptorSet
-      std::cout << "DescriptorSetLayout created!\n";
       createDescriptorPoolWithDescriptorSets(device, &descriptorSetLayout, &descriptorPool, &descriptorSet, 2);
-      std::cout << "DescriptorSet allocated!\n";
       connectBufferWithDescriptor(device, buffer, bufferSize, &descriptorSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
       connectBufferWithDescriptor(device, rawImageBuffer, bufferSize, &descriptorSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
       connectBufferWithDescriptor(device, uniformBuffer, uniformBufferSize, &descriptorSet, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-      std::cout << "Buffers connected to descriptors!\n";
-      
       
       std::cout << "compiling shaders  ... " << std::endl;
       createComputePipeline(device, descriptorSetLayout,
@@ -259,11 +253,50 @@ public:
       std::cout << "doing computations ... " << std::endl;
       runCommandBuffer(commandBuffer, queue, device);
 
-      // The former command rendered a mandelbrot set to a buffer.
-      // Save that buffer as a png on disk.
       std::cout << "saving image       ... " << std::endl;
-      saveRenderedImageFromDeviceMemory(device, bufferMemory, 0, width, height);
+      
+      startCopying = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+      
+      int rowBufferSize(width * sizeof(Pixel));
 
+      void* mappedMemory = nullptr;
+      // Map the buffer memory, so that we can read from it on the CPU.
+
+      // We save the data to a vector.
+      std::vector<unsigned char> image;
+      image.reserve(width * height * 4);
+
+      for (int i = 0; i < height; i += 1) 
+      {
+        size_t offset(i * width * sizeof(Pixel));
+
+        mappedMemory = nullptr;
+
+        // Get the color data from the buffer, and cast it to bytes.
+        vkMapMemory(device, bufferMemory, offset, rowBufferSize, 0, &mappedMemory);
+        Pixel* pmappedMemory = (Pixel *)mappedMemory;
+
+        for (int j = 0; j < width; j += 1)
+        {
+          image.push_back((unsigned char)(255.0f * (pmappedMemory[j].r)));
+          image.push_back((unsigned char)(255.0f * (pmappedMemory[j].g)));
+          image.push_back((unsigned char)(255.0f * (pmappedMemory[j].b)));
+          image.push_back((unsigned char)(255.0f * (pmappedMemory[j].a)));
+        }
+        // Done reading, so unmap.
+        vkUnmapMemory(device, bufferMemory);
+      }
+      
+      milliseconds finishComputing(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      milliseconds gpuComputingTime(finishComputing - startComputing);
+      gpuCopyingTime = gpuCopyingTime + finishComputing - startCopying;
+      std::cout << "Time on GPU: " << gpuComputingTime.count() << " ms.\n";
+      std::cout << "Time of copying between CPU ang GPU: " << gpuCopyingTime.count() << " ms.\n";
+      std::cout << "Time on GPU except copying: " << (gpuComputingTime - gpuCopyingTime).count() << " ms.\n";
+      std::cout << "You can find result at " << resultFilePath << std::endl;
+      
+      SaveBMP(resultFilePath.c_str(), (const uint32_t*)image.data(), width, height);
+      
       // Clean up all vulkan resources.
       std::cout << "destroying all     ... " << std::endl;
       cleanup();
@@ -272,17 +305,19 @@ public:
     void runBilateralFilterOnCPU(const unsigned int* rawImage, int globalWidth, int globalHeight)
     {
       using namespace std::chrono;
+
       constexpr float  GRAYSCALE_R(0.2126f);
       constexpr float  GRAYSCALE_G(0.7152f);
       constexpr float  GRAYSCALE_B(0.0722f);
       constexpr size_t WINDOW_SIDE_HALF_LENGTH(8);
-      constexpr float  RANGE_PARAMETER(0.25f);
-      constexpr float  SPATIAL_PARAMETER(10.f);
+      constexpr float  RANGE_PARAMETER(0.1f);
+      constexpr float  SPATIAL_PARAMETER(2.5f);
       
-      const int      countOfPixels(globalWidth * globalHeight);
-      unsigned char* imageAsBytes((unsigned char*)(rawImage));
-
+      const std::string    resultFilePath("resultByCPU.bmp");
+      const int            countOfPixels(globalWidth * globalHeight);
+      unsigned char*       imageAsBytes((unsigned char*)(rawImage));
       const unsigned char* rawImageAsBytes((const unsigned char*)rawImage);
+      
       Pixel* pixels(new Pixel[countOfPixels]);
       Pixel* filteredPixels(new Pixel[countOfPixels]);
       size_t currentRawImageByte(0);
@@ -352,6 +387,7 @@ public:
       milliseconds finish(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
       milliseconds cpu1ThreadTime(finish - start);
       std::cout << "Time on CPU (1 thread): " << cpu1ThreadTime.count() << " ms.\n";
+      std::cout << "You can find result at " << resultFilePath << std::endl;
       
       std::vector<unsigned char> image;
       image.reserve(countOfPixels);
@@ -364,7 +400,110 @@ public:
         image.push_back((unsigned char)(255.0f * (filteredPixels[i].a)));
       }
 
-      SaveBMP("resultByCPU.bmp", (const uint32_t*)image.data(), globalWidth, globalHeight);
+      SaveBMP(resultFilePath.c_str(), (const uint32_t*)image.data(), globalWidth, globalHeight);
+    }
+    
+    
+    void runBilateralFilterOnCPUMultiThread(const unsigned int* rawImage, int globalWidth, int globalHeight)
+    {
+      using namespace std::chrono;
+      constexpr float  GRAYSCALE_R(0.2126f);
+      constexpr float  GRAYSCALE_G(0.7152f);
+      constexpr float  GRAYSCALE_B(0.0722f);
+      constexpr size_t WINDOW_SIDE_HALF_LENGTH(8);
+      constexpr float  RANGE_PARAMETER(0.1f);
+      constexpr float  SPATIAL_PARAMETER(2.5f);
+      
+      const std::string    resultFilePath("resultByCPUMultiThread.bmp");
+      const int            countOfPixels(globalWidth * globalHeight);
+      unsigned char*       imageAsBytes((unsigned char*)(rawImage));
+      const unsigned char* rawImageAsBytes((const unsigned char*)rawImage);
+      
+      Pixel* pixels(new Pixel[countOfPixels]);
+      Pixel* filteredPixels(new Pixel[countOfPixels]);
+      size_t currentRawImageByte(0);
+      for (int i(0); i < countOfPixels; ++i)
+      {
+        pixels[i].r = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].g = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].b = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+        pixels[i].a = static_cast<float>(rawImageAsBytes[currentRawImageByte++]) / 255.f;
+      }
+      
+      milliseconds start(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      
+      #pragma omp parallel for 
+      for (unsigned int verticalIndex = 0; verticalIndex < globalHeight; ++verticalIndex)
+        #pragma omp parallel for
+        for (unsigned int horizontalIndex = 0; horizontalIndex < globalWidth; ++horizontalIndex)
+        {
+
+          float x = float(horizontalIndex) / float(globalWidth);
+          float y = float(verticalIndex) / float(globalHeight);
+  
+          Pixel originalPixel(pixels[globalWidth * verticalIndex + horizontalIndex]);
+          float originalIntensity(sqrt(pow(originalPixel.r, 2) + pow(originalPixel.g, 2) + pow(originalPixel.b, 2)));
+  
+          float spatialDivider(2.f * pow(SPATIAL_PARAMETER, 2));
+          float rangeDivider(2.f * pow(RANGE_PARAMETER, 2));
+  
+          float sumOfWeights(0.f);
+          float numerator(0.f);
+          int rightBorderIndex(int(horizontalIndex + WINDOW_SIDE_HALF_LENGTH));
+          int downBorderIndex(int(verticalIndex + WINDOW_SIDE_HALF_LENGTH));
+          float intensityMultiplier(0.f);
+          if (originalIntensity != 0.f)
+          {
+            for (int i(int(verticalIndex) - WINDOW_SIDE_HALF_LENGTH); i < downBorderIndex; ++i)
+              for (int j(int(horizontalIndex) - WINDOW_SIDE_HALF_LENGTH); j < rightBorderIndex; ++j)
+                if ((i >= 0) && (i < globalHeight) && (j >= 0) && (j < globalWidth) && (i != verticalIndex) && (j != horizontalIndex))
+                {
+                  Pixel localPixel(pixels[globalWidth * i + j]);
+                  float localIntensity(sqrt(pow(localPixel.r, 2) + pow(localPixel.g, 2) + pow(localPixel.b, 2)));
+                  float squareDistance(pow(horizontalIndex - j, 2) + pow(verticalIndex - i, 2));
+                  float squareNormIntesityDifference(pow(localIntensity - originalIntensity, 2));
+                  float weight(exp(-(squareDistance / spatialDivider) - (squareNormIntesityDifference / rangeDivider)));
+                  sumOfWeights += weight;
+                  numerator += weight * localIntensity;
+                }
+            intensityMultiplier = numerator / sumOfWeights / originalIntensity;
+          }
+
+          Pixel newPixel { 
+            intensityMultiplier * originalPixel.r,
+            intensityMultiplier * originalPixel.g,
+            intensityMultiplier * originalPixel.b,
+            intensityMultiplier * originalPixel.a
+          };
+          if (newPixel.r > 1.0)
+            newPixel.r = 1.0;
+          if (newPixel.g > 1.0)
+            newPixel.g = 1.0;
+          if (newPixel.b > 1.0)
+            newPixel.b = 1.0;
+          newPixel.a = originalPixel.a;
+  
+          filteredPixels[globalWidth * verticalIndex + horizontalIndex] = newPixel;
+      
+        }
+      
+      milliseconds finish(duration_cast<milliseconds>(system_clock::now().time_since_epoch()));
+      milliseconds cpu1ThreadTime(finish - start);
+      std::cout << "Time on CPU (4 threads): " << cpu1ThreadTime.count() << " ms.\n";
+      std::cout << "You can find result at " << resultFilePath << std::endl;
+      
+      std::vector<unsigned char> image;
+      image.reserve(countOfPixels);
+
+      for (int i(0); i < countOfPixels; ++i) 
+      {
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].r)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].g)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].b)));
+        image.push_back((unsigned char)(255.0f * (filteredPixels[i].a)));
+      }
+
+      SaveBMP(resultFilePath.c_str(), (const uint32_t*)image.data(), globalWidth, globalHeight);
     }
     
     
@@ -406,10 +545,10 @@ public:
       SaveBMP("result.bmp", (const uint32_t*)image.data(), a_width, a_height);
     }
     
-    static void loadRawImageToDeviceMemory(VkDevice a_device, VkDeviceMemory a_bufferMemory, unsigned int* image, size_t a_offset, int a_width, int a_height)
+    static void loadRawImageToDeviceMemory(VkDevice a_device, VkDeviceMemory a_bufferMemory, const unsigned int* image, size_t a_offset, int a_width, int a_height)
     {
-      const int      a_bufferSize = a_width * sizeof(Pixel);
-      unsigned char* imageAsBytes((unsigned char*)(image));
+      const int            a_bufferSize = a_width * sizeof(Pixel);
+      const unsigned char* imageAsBytes((const unsigned char*)(image));
 
       void* mappedMemory = nullptr;
       // Map the buffer memory, so that we can read from it on the CPU.
@@ -796,15 +935,29 @@ public:
 int main(int argc, char* argv[])
 {
   ComputeApplication app;
-  
-  std::string filePath("mandelbrot.bmp");
+  std::string filePath;
   
   if (argc > 1)
     filePath = std::string(argv[1]);
+  else
+  {
+    std::cout << "Please, specify path to image you want to process. It can be .bmp-file with 24-bit RGB color or 32-bit RGBA color.\n";
+    return EXIT_SUCCESS;
+  }
 
   try
   {
-   app.runBilateralFilter(filePath);
+    // Width of the image.
+    int width(0);
+    // Height of the image.
+    int height(0);
+    // Raw image we need to filter.
+    unsigned int* rawImage(LoadBMP(filePath.c_str(), width, height));
+      
+    app.runBilateralFilter(rawImage, width, height);
+    app.runBilateralFilterOnCPU(rawImage, width, height);
+    app.runBilateralFilterOnCPUMultiThread(rawImage, width, height);
+    delete[] rawImage;
   }
   catch (const std::runtime_error& e)
   {
@@ -813,9 +966,5 @@ int main(int argc, char* argv[])
   }
     
   return EXIT_SUCCESS;
-//   int w, h;
-//   unsigned int* pixels(LoadBMP(filePath.c_str(), w, h));
-//   SaveBMP("result.bmp", pixels, w, h);
-//   delete[] pixels;
-//   return 0;
+
 }

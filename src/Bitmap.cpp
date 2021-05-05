@@ -73,7 +73,7 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
     byteOffsetToPixelArray <<=8;
     byteOffsetToPixelArray += (unsigned char)bmpFileHeader[i];
   }
-  std::cout << "Byte offset to PixelArray: " << byteOffsetToPixelArray << std::endl;
+
   for (size_t i(7); i > 3; --i)
   {
     w <<= 8;
@@ -90,13 +90,8 @@ unsigned int* LoadBMP(const char* fname, int& w, int& h)
     bytesPerPixel <<= 8;
     bytesPerPixel += (unsigned char)(bmpInfoHeader[i]);
   }
-  std::cout << "Bytes per pixel: " << bytesPerPixel << std::endl;
-  std::cout << "paddedSize: " << paddedSize << std::endl;
-  std::cout << "Width: " << w << std::endl;
-  std::cout << "Height: " << h << std::endl;
 
   size_t count(w * h);
-
     
   unsigned int* pixels(new unsigned int[count]);
   

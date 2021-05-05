@@ -7,8 +7,8 @@
 #define GRAYSCALE_B 0.0722f
 #define WINDOW_SIDE_HALF_LENGTH 16
 
-#define RANGE_PARAMETER 0.25f
-#define SPATIAL_PARAMETER 10.f
+#define RANGE_PARAMETER 0.1f
+#define SPATIAL_PARAMETER 2.5f
 
 layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
 
